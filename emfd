@@ -1,0 +1,183 @@
+#!/bin/sh
+
+REALPATH=$(realpath $0)
+
+EMFD=$(basename $REALPATH)
+EMFD_DIRECTORY=$(dirname $REALPATH)
+
+EMACS=${EMACS:-emacs}
+EMACS_FLAGS="-Q --batch -l $EMFD_DIRECTORY/emfd.el"
+
+function usage {
+    cat <<EOF
+
+Usage: $EMFD PATH [query-expression] [options] [other-mdfind-options]
+
+Query expression syntax:
+
+  {ATTRIBUTE}:{VALUE}[MOD]
+
+  - The ATTRIBUTE here is simplified, for example ‘name’ corresponds to
+    ‘kMDItemFSName’:
+
+    | Attribute | Value    | Description
+    |-----------+----------+------------------------
+    | name      | string   | = kMDItemFSName
+    | type      | string   | = kMDItemContentType
+    | tag       | string   | = kMDItemUserTags
+    | content   | string   | = kMDItemTextContent
+    | size      | string   | File size
+    | ctime     | datetime | Created time
+    | atime     | datetime | Accessed time
+    | mtime     | datetime | Modified time
+    | cmin      | datetime | Created time (in minutes)
+    | amin      | datetime | Accessed time (in minutes)
+    | mmin      | datetime | Modified time (in minutes)
+
+    File size format:
+
+        [+-]{num}{unit}?
+        {small-num}{unit}?-{big-num}{unit}?
+
+      Units:
+        t    Terabyte        m    Megabyte      nil    Byte
+        g    Gigabyte        k    Kilobyte
+
+      Examples:
+        -200m     Smaller than 200M
+        20-200m   Bigger than 20M but smaller than 200M, equivalent to ‘20m-200m’
+
+    Date time format:
+
+        [+-]{num}{unit}
+        {num}{unit}?-{num}{unit}
+        [+-]{timestr}
+        {timestr}-{timestr}
+
+      +         Before
+      -         After
+      num       Number
+      timestr   Date time string, e.g. "2022/4/1 00:01"
+      unit      Can be one of following:
+                y   year            h   hour
+                m   month           M   minute
+                d   day             s   second
+                w   week
+
+  - MOD is Value Comparison Modifiers:
+
+    | Modifier | Description
+    |----------+---------------------------------------------------
+    |    c     | Case insensitive
+    |    d     | Diacritical insensitive.
+
+    NOTE: MOD cannot be used for date time value.
+
+  - VALUE is the keyword to query, multiple keywords should be wrapped in
+    quotation marks.
+
+  Queries can be combined using a C-like syntax for AND (&&), OR (||) and NOT(!).
+
+Options:
+
+  --help                Print help
+  --dry-run             Print the command instead of executing it
+  -name VALUE           Equivalent to 'name:VALUE'
+  -type VALUE           Equivalent to 'type:VALUE'
+  -tag  VALUE           Equivalent to 'tag:VALUE'
+  -content VALUE        Equivalent to 'content:VALUE'
+  -size VALUE           Equivalent to 'size:VALUE'
+  -ctime VALUE          Equivalent to 'ctime:VALUE'
+  -atime VALUE          Equivalent to 'atime:VALUE'
+  -mtime VALUE          Equivalent to 'mtime:VALUE'
+  -cmin  VALUE          Equivalent to 'cmin:VALUE'
+  -amin  VALUE          Equivalent to 'amin:VALUE'
+  -mmin  VALUE          Equivalent to 'mmin:VALUE'
+
+Any other mdfind options will be send to mdfind directly.
+
+Examples:
+
+  # Find files that contains words starting with "frede" (ignore case &
+  # diacritication) and whose tag is "Red"
+  $EMFD / 'content:"frede*"cd && tag:Red'"
+
+  # Same as above
+  $EMFD / -content '"frede*"cd' -tag Red
+
+  # Find files that created/accessed/modified in specific date times
+  $EMFD / -ctime -1d          # Created today
+  $EMFD / -ctime 2d-1d        # Created yestoday
+  $EMFD / -mtime -50          # Modified in 50 minutes
+
+  # Find files according to the given size
+  $EMFD / -size -200m         # File size <= 200M
+  $EMFD / -size 20-200m       # 20M <= file size <= 200M
+
+EOF
+    exit $1
+}
+
+
+function concat_query {
+    if test -n "${opt_query}"; then
+        opt_query="${opt_query} && $1"
+    else
+        opt_query="$1"
+    fi
+}
+
+opt_onlyin=
+opt_query=
+opt_dry_run=
+opt_others=
+opt_mdfind_options=
+
+if [[ ! $1 = -* ]]; then
+    opt_onlyin=$1; shift
+fi
+
+if [[ ! $1 = -* ]]; then
+    opt_query=$1; shift
+fi
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --help) usage 0;;
+        --dry-run) export opt_dry_run=yes;;
+        -name   ) shift; concat_query "name:$1";;
+        -type   ) shift; concat_query "type:$1";;
+        -tag    ) shift; concat_query "tag:$1";;
+        -content) shift; concat_query "content:$1";;
+        -size   ) shift; concat_query "size:$1";;
+        -ctime  ) shift; concat_query "ctime:$1";;
+        -atime  ) shift; concat_query "atime:$1";;
+        -mtime  ) shift; concat_query "mtime:$1";;
+        -cmin   ) shift; concat_query "ctime:$1M";;
+        -amin   ) shift; concat_query "atime:$1M";;
+        -mmin   ) shift; concat_query "mtime:$1M";;
+        -*) opt_mdfind_options="$opt_mdfind_options $1"
+            if [[ ! $2 = -* ]]; then
+                opt_mdfind_options="$opt_mdfind_options $2"
+                shift
+            fi
+            ;;
+        *) concat_query "$1";;
+    esac
+    shift
+done
+
+query64=$(echo "${opt_query}" | base64)
+query=`$EMACS $EMACS_FLAGS --eval "(emfd \"$query64\")"`
+
+if test -z "${opt_query}"; then
+    usage 1
+else
+    if test -n "${opt_dry_run}"; then
+        echo "mdfind '$query' -onlyin $opt_onlyin $opt_others $opt_mdfind_options"
+    else
+        mdfind "$query" -onlyin $opt_onlyin $opt_others $opt_mdfind_options
+    fi
+fi
+
+# emfd ends here
